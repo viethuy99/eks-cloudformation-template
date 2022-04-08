@@ -1,0 +1,532 @@
+Parameters:
+  OrganizationNameAbbreviation:
+    Type: String
+    Description: 'Abbreviation of the organization name, all lowercase. Eg: abc, xyz,
+      ...'
+    AllowedPattern: '[a-z0-9\-]+'
+  ProjectName:
+    Type: String
+    Description: Project name, all lowercase.
+    AllowedPattern: '[a-z0-9\-]+'
+  Environment:
+    Type: String
+    Description: prod, stag, dev, uat, ...
+    AllowedPattern: '[a-z0-9\-]+'
+  KmsAdminPrincipalArns:
+    Type: CommaDelimitedList
+    Description: List of arn of AWS principal (IAM user, role) which will have the
+      rights to manage KMS key. You can specify multiple arns, seperated by comma.
+  ClusterName:
+    Type: String
+    Description: EKS cluster name
+    AllowedPattern: ^[0-9A-Za-z][A-Za-z0-9\-_]*
+  K8sServiceIpv4Cidr:
+    Type: String
+    Description: IP range for the services inside K8s
+  ClusterVpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Id of the VPC in which the EKS cluster will be placed
+  ClusterSecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Id of all the security groups which will be associated with the EKS
+      cluster, seperated by comma.
+  ClusterControlPlaneSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Id of all subnets in which EKS cluster control plane network interfaces
+      will be placed, seperated by comma.
+  ClusterVersion:
+    Type: String
+    Description: 'Major and Minor Version of the K8s platform,. Eg: 1.18. See https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html'
+    AllowedPattern: '[1-9]\.[0-9]+'
+  EksEnableEndpointPublicAccess:
+    Type: String
+    AllowedValues:
+    - true
+    - false
+    Default: false
+    Description: Enable Internet access to the EKS control plane API.
+  EksEndpointPublicAccessCidrs:
+    Type: CommaDelimitedList
+    Description: Public source CIDRs allowed to access EKS control plane API. Multiple
+      CIDRs seperated by comma. Only use when EksEnableEndpointPublicAccess is true.
+      Default is 0.0.0.0/0
+    Default: 0.0.0.0/0
+  EksEnableEndpointPrivateAccess:
+    Type: String
+    AllowedValues:
+    - true
+    - false
+    Default: true
+    Description: Enable private access to the EKS control plane API.
+  ClusterEnabledLoggingTypes:
+    Type: CommaDelimitedList
+    Description: 'Types of log to enable for the cluster. Supported types are: api,audit,authenticator,controllerManager,scheduler.
+      You can specify multiple types seperated by comma. See: https://docs.aws.amazon.com/eks/latest/userguide/control-plane-logs.html'
+    Default: ''
+  EksClusterRoleArn:
+    Type: String
+    Description: IAM role for the EKS cluster.
+  ResourceScope:
+    Type: String
+    AllowedValues:
+    - owned
+    - shared
+    Default: owned
+    Description: Are these resources 'owned' by the project it self or 'shared' with
+      other projects?
+  OwnerDepartment:
+    Type: String
+    Description: Name of the department that own these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+  ResourceDepartmentCreator:
+    Type: String
+    Description: Name of the department that create these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+  ResourceCreator:
+    Type: String
+    Description: Name of the person who create these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+Conditions:
+  EnableClusterLogging:
+    Fn::Not:
+    - Fn::Equals:
+      - Fn::Join:
+        - ''
+        - Ref: ClusterEnabledLoggingTypes
+      - ''
+  HasPublicCidrs:
+    Fn::Not:
+    - Fn::Equals:
+      - Fn::Join:
+        - ''
+        - Ref: EksEndpointPublicAccessCidrs
+      - ''
+Resources:
+  EksEncryptionKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    Properties:
+      Description: Encrypt EKS master nodes
+      Enabled: true
+      EnableKeyRotation: true
+      KeyPolicy:
+        Id: policy
+        Version: '2012-10-17'
+        Statement:
+        - Sid: Enable IAM User Permissions
+          Effect: Allow
+          Principal:
+            AWS:
+              Fn::Sub: arn:aws:iam::${AWS::AccountId}:root
+          Action: kms:*
+          Resource: '*'
+        - Sid: Allow access for Key Administrators
+          Effect: Allow
+          Principal:
+            AWS:
+              Ref: KmsAdminPrincipalArns
+          Action:
+          - kms:Create*
+          - kms:Describe*
+          - kms:Enable*
+          - kms:List*
+          - kms:Put*
+          - kms:Update*
+          - kms:Revoke*
+          - kms:Disable*
+          - kms:Get*
+          - kms:Delete*
+          - kms:TagResource
+          - kms:UntagResource
+          - kms:ScheduleKeyDeletion
+          - kms:CancelKeyDeletion
+          Resource: '*'
+        - Sid: Allow use of the key
+          Effect: Allow
+          Principal:
+            AWS:
+            - Ref: EksClusterRoleArn
+          Action:
+          - kms:Encrypt
+          - kms:Decrypt
+          - kms:ReEncrypt*
+          - kms:GenerateDataKey*
+          - kms:DescribeKey
+          Resource: '*'
+        - Sid: Allow attachment of persistent resources
+          Effect: Allow
+          Principal:
+            AWS:
+            - Ref: EksClusterRoleArn
+          Action:
+          - kms:CreateGrant
+          - kms:ListGrants
+          - kms:RevokeGrant
+          Resource: '*'
+          Condition:
+            Bool:
+              kms:GrantIsForAWSResource: 'true'
+      KeySpec: SYMMETRIC_DEFAULT
+      PendingWindowInDays: 7
+      Tags:
+      - Key: project-name
+        Value:
+          Ref: ProjectName
+      - Key: environment
+        Value:
+          Ref: Environment
+      - Key: organization
+        Value:
+          Ref: OrganizationNameAbbreviation
+      - Key: resource-scope
+        Value:
+          Ref: ResourceScope
+      - Key: owner-dep
+        Value:
+          Ref: OwnerDepartment
+      - Key: component-role
+        Value: eks-kms-key
+      - Key: resource-department-creator
+        Value:
+          Ref: ResourceDepartmentCreator
+      - Key: resource-creator
+        Value:
+          Ref: ResourceCreator
+      - Key: resource-type
+        Value: kms
+      - Key: Name
+        Value:
+          Fn::Sub: ${Environment}.${ProjectName}.eks-cluster.key
+  EksEncryptionKeyAlias:
+    Type: AWS::KMS::Alias
+    DeletionPolicy: Retain
+    Properties:
+      AliasName:
+        Fn::Sub:
+        - alias/${OrganizationNameAbbreviation}/${Environment}/${ProjectName}/eks-cluster-${RandomString}
+        - RandomString:
+            Fn::Select:
+            - 0
+            - Fn::Split:
+              - '-'
+              - Ref: EksEncryptionKey
+      TargetKeyId:
+        Ref: EksEncryptionKey
+  EksCluster:
+    Type: AWS::EKS::Cluster
+    DeletionPolicy: Retain
+    Properties:
+      EncryptionConfig:
+      - Provider:
+          KeyArn:
+            Fn::GetAtt:
+            - EksEncryptionKey
+            - Arn
+        Resources:
+        - secrets
+      KubernetesNetworkConfig:
+        ServiceIpv4Cidr:
+          Ref: K8sServiceIpv4Cidr
+      Name:
+        Ref: ClusterName
+      ResourcesVpcConfig:
+        SecurityGroupIds:
+          Ref: ClusterSecurityGroupIds
+        SubnetIds:
+          Ref: ClusterControlPlaneSubnetIds
+      RoleArn:
+        Ref: EksClusterRoleArn
+      Version:
+        Ref: ClusterVersion
+  EksCustomResourceFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Used by EKS custom resource function
+      RoleName:
+        Fn::Sub: ${Environment}.${ProjectName}.eks-cluster-crlambda.role
+      Tags:
+      - Key: project-name
+        Value:
+          Ref: ProjectName
+      - Key: environment
+        Value:
+          Ref: Environment
+      - Key: organization
+        Value:
+          Ref: OrganizationNameAbbreviation
+      - Key: resource-scope
+        Value:
+          Ref: ResourceScope
+      - Key: owner-dep
+        Value:
+          Ref: OwnerDepartment
+      - Key: component-role
+        Value: eks-cluster-crlambda-role
+      - Key: resource-department-creator
+        Value:
+          Ref: ResourceDepartmentCreator
+      - Key: resource-creator
+        Value:
+          Ref: ResourceCreator
+      - Key: resource-type
+        Value: iam
+      - Key: Name
+        Value:
+          Fn::Sub: ${Environment}.${ProjectName}.eks-cluster-crlambda.role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName:
+          Fn::Sub: ${Environment}.${ProjectName}.eks-cluster-crlambda.policy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - eks:UpdateClusterVersion
+            - eks:UntagResource
+            - eks:ListTagsForResource
+            - eks:TagResource
+            - eks:DescribeCluster
+            - eks:UpdateClusterConfig
+            - eks:DescribeUpdate
+            Resource:
+            - Fn::GetAtt:
+              - EksCluster
+              - Arn
+            - Fn::Sub:
+              - ${Arn}/*
+              - Arn:
+                  Fn::GetAtt:
+                  - EksCluster
+                  - Arn
+          - Effect: Allow
+            Action:
+            - lambda:AddPermission
+            - lambda:RemovePermission
+            - events:PutRule
+            - events:DeleteRule
+            - events:PutTargets
+            - events:RemoveTargets
+            Resource: '*'
+  EksCustomResourceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Cloudformation custom resource function used to EKS cluster
+      FunctionName:
+        Fn::Sub: ${Environment}-${ProjectName}-eks-cluster-crlambda-function
+      Handler: custom_resource.lambda_handler
+      Runtime: python3.8
+      Tags:
+      - Key: project-name
+        Value:
+          Ref: ProjectName
+      - Key: environment
+        Value:
+          Ref: Environment
+      - Key: organization
+        Value:
+          Ref: OrganizationNameAbbreviation
+      - Key: resource-scope
+        Value:
+          Ref: ResourceScope
+      - Key: owner-dep
+        Value:
+          Ref: OwnerDepartment
+      - Key: component-role
+        Value: eks-cluster-crlambda-function
+      - Key: resource-department-creator
+        Value:
+          Ref: ResourceDepartmentCreator
+      - Key: resource-creator
+        Value:
+          Ref: ResourceCreator
+      - Key: resource-type
+        Value: lambda
+      - Key: Name
+        Value:
+          Fn::Sub: ${Environment}-${ProjectName}-eks-cluster-crlambda-function
+      Role:
+        Fn::GetAtt:
+        - EksCustomResourceFunctionRole
+        - Arn
+      Timeout: 60
+      Code:
+        S3Bucket: mcr-master-apse1-templates-bucket
+        S3Key: 10de1fcc1a9b2f8be3a30c8dda7dc3d1
+  UpdateEksClusterVpcConfig:
+    Type: Custom::UpdateEksVpcConfig
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+        - EksCustomResourceFunction
+        - Arn
+      ClusterName:
+        Ref: EksCluster
+      EndpointPrivateAccess:
+        Ref: EksEnableEndpointPrivateAccess
+      EndpointPublicAccess:
+        Ref: EksEnableEndpointPublicAccess
+      PublicAccessCidrs:
+        Fn::If:
+        - HasPublicCidrs
+        - Ref: EksEndpointPublicAccessCidrs
+        - Ref: AWS::NoValue
+  UpdateEksClusterLogging:
+    Type: Custom::UpdateEksLogging
+    DependsOn: UpdateEksClusterVpcConfig
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+        - EksCustomResourceFunction
+        - Arn
+      ClusterName:
+        Ref: EksCluster
+      ClusterLogging:
+        Fn::If:
+        - EnableClusterLogging
+        - Types:
+            Ref: ClusterEnabledLoggingTypes
+          Enabled: true
+        - Ref: AWS::NoValue
+  UpdateEksTagging:
+    Type: Custom::UpdateEksTagging
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+        - EksCustomResourceFunction
+        - Arn
+      ClusterName:
+        Ref: EksCluster
+      Tags:
+      - Key: project-name
+        Value:
+          Ref: ProjectName
+      - Key: environment
+        Value:
+          Ref: Environment
+      - Key: organization
+        Value:
+          Ref: OrganizationNameAbbreviation
+      - Key: resource-scope
+        Value:
+          Ref: ResourceScope
+      - Key: owner-dep
+        Value:
+          Ref: OwnerDepartment
+      - Key: component-role
+        Value: eks-cluster
+      - Key: resource-department-creator
+        Value:
+          Ref: ResourceDepartmentCreator
+      - Key: resource-creator
+        Value:
+          Ref: ResourceCreator
+      - Key: resource-type
+        Value: eks
+      - Key: Name
+        Value:
+          Ref: ClusterName
+  EksOidcThumbprint:
+    Type: Custom::OidcThumbprint
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+        - EksCustomResourceFunction
+        - Arn
+      Url:
+        Fn::GetAtt:
+        - EksCluster
+        - OpenIdConnectIssuerUrl
+  EksIamOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    DeletionPolicy: Retain
+    Properties:
+      ClientIdList:
+      - sts.amazonaws.com
+      Tags:
+      - Key: project-name
+        Value:
+          Ref: ProjectName
+      - Key: environment
+        Value:
+          Ref: Environment
+      - Key: organization
+        Value:
+          Ref: OrganizationNameAbbreviation
+      - Key: resource-scope
+        Value:
+          Ref: ResourceScope
+      - Key: owner-dep
+        Value:
+          Ref: OwnerDepartment
+      - Key: component-role
+        Value: eks-identity-provider
+      - Key: resource-department-creator
+        Value:
+          Ref: ResourceDepartmentCreator
+      - Key: resource-creator
+        Value:
+          Ref: ResourceCreator
+      - Key: resource-type
+        Value: iam
+      - Key: Name
+        Value:
+          Fn::Sub: ${Environment}.${ProjectName}.eks-cluster.idp
+      ThumbprintList:
+      - Ref: EksOidcThumbprint
+      Url:
+        Fn::GetAtt:
+        - EksCluster
+        - OpenIdConnectIssuerUrl
+Outputs:
+  ClusterName:
+    Description: EKS cluster name
+    Value:
+      Ref: EksCluster
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-EksCluterName
+  EksClusterArn:
+    Description: EKS cluster ARN
+    Value:
+      Fn::GetAtt:
+      - EksCluster
+      - Arn
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-EksCluterArn
+  EksClusterApiEndpoint:
+    Description: EKS cluster API endpoint
+    Value:
+      Fn::GetAtt:
+      - EksCluster
+      - Endpoint
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-EksCluterEndpoint
+  EksClusterOidcIssuerUrl:
+    Description: The issuer URL for the cluster's OIDC identity provider
+    Value:
+      Fn::GetAtt:
+      - EksCluster
+      - OpenIdConnectIssuerUrl
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-EksClusterOidcIssuerUrl
+  EksOidcProviderArn:
+    Description: ARN of the IAM OIDC provider associated with the EKS cluster
+    Value:
+      Ref: EksIamOidcProvider
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-EksOidcProviderArn

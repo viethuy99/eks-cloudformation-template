@@ -1,0 +1,86 @@
+Parameters:
+  OrganizationNameAbbreviation:
+    Type: String
+    Description: 'Abbreviation of the organization name, all lowercase. Eg: abc, xyz, ...'
+    AllowedPattern: '[a-z0-9\-]+'
+  ProjectName:
+    Type: String
+    Description: Project name, all lowercase.
+    AllowedPattern: '[a-z0-9\-]+'
+  Environment:
+    Type: String
+    Description: prod, stag, dev, uat, ...
+    AllowedPattern: '[a-z0-9\-]+'
+  ResourceScope:
+    Type: String
+    AllowedValues:
+      - owned
+      - shared
+    Default: owned
+    Description: Are these resources 'owned' by the project it self or 'shared' with other projects?
+  OwnerDepartment:
+    Type: String
+    Description: Name of the department that own these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+  ResourceDepartmentCreator:
+    Type: String
+    Description: Name of the department that create these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+  ResourceCreator:
+    Type: String
+    Description: Name of the person who create these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+
+Resources:
+  EksClusterRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: eks.amazonaws.com
+          Action: sts:AssumeRole
+      Description: This role was created by cloudformation, used by EKS cluster control plane
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+      RoleName: !Sub '${Environment}.${ProjectName}.eks-cluster.role'
+      Tags:
+        - Key: project-name
+          Value: !Ref ProjectName
+        - Key: environment
+          Value: !Ref Environment
+        - Key: organization
+          Value: !Ref OrganizationNameAbbreviation
+        - Key: resource-scope
+          Value: !Ref ResourceScope
+        - Key: owner-dep
+          Value: !Ref OwnerDepartment
+        - Key: component-role
+          Value: eks-cluster-role
+        - Key: resource-department-creator
+          Value: !Ref ResourceDepartmentCreator
+        - Key: resource-creator
+          Value: !Ref ResourceCreator
+        - Key: resource-type
+          Value: iam
+        - Key: Name
+          Value: !Sub '${Environment}.${ProjectName}.eks-cluster.role'
+      Policies:
+        - PolicyName: !Sub '${ProjectName}-EksCluster-${Environment}-Policy'
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeAccountAttributes
+                  - ec2:DescribeInternetGateways
+                Resource: '*'
+
+Outputs:
+  EksClusterRoleArn:
+    Value: !GetAtt EksClusterRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-EksClusterRoleArn'

@@ -1,0 +1,5 @@
+crhelper
+sockets
+testresources
+pyopenssl
+certifi

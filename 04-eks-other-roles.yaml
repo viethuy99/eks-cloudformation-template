@@ -1,0 +1,471 @@
+Transform:
+  - PyPlate
+Parameters:
+  OrganizationNameAbbreviation:
+    Type: String
+    Description: 'Abbreviation of the organization name, all lowercase. Eg: abc, xyz, ...'
+    AllowedPattern: '[a-z0-9\-]+'
+  ProjectName:
+    Type: String
+    Description: Project name, all lowercase.
+    AllowedPattern: '[a-z0-9\-]+'
+  Environment:
+    Type: String
+    Description: prod, stag, dev, uat, ...
+    AllowedPattern: '[a-z0-9\-]+'
+  EksOidcProviderArn:
+    Type: String
+    Description: 'ARN of the EKS OIDC IAM identity provider. See https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html'
+  EksClusterOidcIssuerUrl:
+    Type: String
+    Description: EKS cluster OIDC issuer url. Describe the EKS cluster to get it.
+  ResourceScope:
+    Type: String
+    AllowedValues:
+      - owned
+      - shared
+    Default: owned
+    Description: Are these resources 'owned' by the project it self or 'shared' with other projects?
+  ControllerServiceAccount:
+    Type: String
+    Description: 'Identity the AWS Load Balancer Controller service account which will use this role. The value must follow this format: <namespace>:<service_account_name>'
+    Default: operation:aws-load-balancer-controller
+  AutoscalerServiceAccount:
+    Type: String
+    Description: 'Identity the Cluster Autoscaler service account which will use this role. The value must follow this format: <namespace>:<service_account_name>'
+    Default: operation:cluster-autoscaler
+  ExternalSecretsServiceAccount:
+    Type: String
+    Description: 'Identity the External secrets service account which will use this role. The value must follow this format: <namespace>:<service_account_name>. This information is used to create IAM role for external secrets service account, with permissions to assume the following roles: arn:aws:iam::${AWS::AccountId}:role/${Environment}.${ProjectName}.eks-secret-*'
+    Default: operation:external-secrets
+  OwnerDepartment:
+    Type: String
+    Description: Name of the department that own these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+  ResourceDepartmentCreator:
+    Type: String
+    Description: Name of the department that create these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+  ResourceCreator:
+    Type: String
+    Description: Name of the person who create these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+Resources:
+  ExternalSecretsRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    Properties:
+      Description: Used by Kubernetes External Secrets controller addon service account
+      RoleName: !Sub '${Environment}.${ProjectName}.eks-external-secrets.role'
+      Tags:
+        - Key: project-name
+          Value: !Ref ProjectName
+        - Key: environment
+          Value: !Ref Environment
+        - Key: organization
+          Value: !Ref OrganizationNameAbbreviation
+        - Key: resource-scope
+          Value: !Ref ResourceScope
+        - Key: owner-dep
+          Value: !Ref OwnerDepartment
+        - Key: component-role
+          Value: eks-addon-role
+        - Key: resource-department-creator
+          Value: !Ref ResourceDepartmentCreator
+        - Key: resource-creator
+          Value: !Ref ResourceCreator
+        - Key: resource-type
+          Value: iam
+        - Key: Name
+          Value: !Sub '${Environment}.${ProjectName}.eks-external-secrets.role'
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref EksOidcProviderArn
+            Action: 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals: |
+                #!PyPlate
+                import re
+                output = {}
+                p = '(?:http.*://)?(?P<id>.*)'
+                url = params['EksClusterOidcIssuerUrl']
+                service_account = params['ExternalSecretsServiceAccount']
+                m = re.search(p, url)
+                id = m.group('id')
+                output[id + ':sub'] = 'system:serviceaccount:' + service_account
+      Policies:
+        - PolicyName: !Sub '${Environment}.${ProjectName}.eks-external-secrets.policy'
+          PolicyDocument: 
+            Version: '2012-10-17'
+            Statement:
+            - Sid: VisualEditor0
+              Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${Environment}.${ProjectName}.eks-secret-*'
+
+  EksVpcCniRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    Properties:
+      Description: Used by EKS CNI addon service account
+      RoleName: !Sub '${Environment}.${ProjectName}.eks-cni-addon.role'
+      Tags:
+        - Key: project-name
+          Value: !Ref ProjectName
+        - Key: environment
+          Value: !Ref Environment
+        - Key: organization
+          Value: !Ref OrganizationNameAbbreviation
+        - Key: resource-scope
+          Value: !Ref ResourceScope
+        - Key: owner-dep
+          Value: !Ref OwnerDepartment
+        - Key: component-role
+          Value: eks-addon-role
+        - Key: resource-department-creator
+          Value: !Ref ResourceDepartmentCreator
+        - Key: resource-creator
+          Value: !Ref ResourceCreator
+        - Key: resource-type
+          Value: iam
+        - Key: Name
+          Value: !Sub '${Environment}.${ProjectName}.eks-cni-addon.role'
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref EksOidcProviderArn
+            Action: 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals: |
+                #!PyPlate
+                import re
+                output = {}
+                p = '(?:http.*://)?(?P<id>.*)'
+                url = params['EksClusterOidcIssuerUrl']
+                m = re.search(p, url)
+                id = m.group('id')
+                output[id + ':aud'] = 'sts.amazonaws.com'
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKS_CNI_Policy"
+
+  NodeInstanceRole:
+    Type: "AWS::IAM::Role"
+    DeletionPolicy: Retain
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKS_CNI_Policy"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+      Path: /
+      RoleName: !Sub '${Environment}.${ProjectName}.eks-worker-nodes.role'
+      Tags:
+        - Key: project-name
+          Value: !Ref ProjectName
+        - Key: environment
+          Value: !Ref Environment
+        - Key: organization
+          Value: !Ref OrganizationNameAbbreviation
+        - Key: resource-scope
+          Value: !Ref ResourceScope
+        - Key: owner-dep
+          Value: !Ref OwnerDepartment
+        - Key: component-role
+          Value: eks-worker-nodes-role
+        - Key: resource-department-creator
+          Value: !Ref ResourceDepartmentCreator
+        - Key: resource-creator
+          Value: !Ref ResourceCreator
+        - Key: resource-type
+          Value: iam
+        - Key: Name
+          Value: !Sub '${Environment}.${ProjectName}.eks-worker-nodes.role'
+
+  ClusterAutoscalerRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref EksOidcProviderArn
+            Action: 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals: |
+                #!PyPlate
+                import re
+                output = {}
+                p = '(?:http.*://)?(?P<id>.*)'
+                url = params['EksClusterOidcIssuerUrl']
+                autoscaler_service_account = params['AutoscalerServiceAccount']
+                m = re.search(p, url)
+                id = m.group('id')
+                output[id + ':sub'] = 'system:serviceaccount:' + autoscaler_service_account
+      Description: used by AWS Load Balancer Controller EKS service account
+      RoleName: !Sub '${Environment}.${ProjectName}.eks-cluster-autoscaler.role'
+      Tags:
+        - Key: project-name
+          Value: !Ref ProjectName
+        - Key: environment
+          Value: !Ref Environment
+        - Key: organization
+          Value: !Ref OrganizationNameAbbreviation
+        - Key: resource-scope
+          Value: !Ref ResourceScope
+        - Key: owner-dep
+          Value: !Ref OwnerDepartment
+        - Key: component-role
+          Value: eks-cluster-autoscaler-role
+        - Key: resource-department-creator
+          Value: !Ref ResourceDepartmentCreator
+        - Key: resource-creator
+          Value: !Ref ResourceCreator
+        - Key: resource-type
+          Value: iam
+        - Key: Name
+          Value: !Sub '${Environment}.${ProjectName}.eks-cluster-autoscaler.role'
+      Policies:
+        - PolicyName: !Sub '${Environment}.${ProjectName}.eks-cluster-autoscaler.policy'
+          PolicyDocument: 
+            Version: '2012-10-17'
+            Statement:
+            - Sid: VisualEditor0
+              Effect: Allow
+              Action:
+              - autoscaling:SetDesiredCapacity
+              - autoscaling:TerminateInstanceInAutoScalingGroup
+              Resource:
+              - !Sub 'arn:aws:autoscaling:${AWS::Region}:${AWS::AccountId}:autoScalingGroup:*:autoScalingGroupName/eks-*'
+            - Sid: VisualEditor1
+              Effect: Allow
+              Action:
+              - autoscaling:DescribeAutoScalingInstances
+              - autoscaling:DescribeAutoScalingGroups
+              - autoscaling:DescribeTags
+              - autoscaling:DescribeLaunchConfigurations
+              Resource: "*"
+
+  AwsLoadBalancerControllerRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref EksOidcProviderArn
+            Action: 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals: |
+                #!PyPlate
+                import re
+                output = {}
+                p = '(?:http.*://)?(?P<id>.*)'
+                url = params['EksClusterOidcIssuerUrl']
+                controller_service_account = params['ControllerServiceAccount']
+                m = re.search(p, url)
+                id = m.group('id')
+                output[id + ':sub'] = 'system:serviceaccount:' + controller_service_account
+      Description: used by AWS Load Balancer Controller EKS service account
+      RoleName: !Sub '${Environment}.${ProjectName}.eks-loadbalancer-controller.role'
+      Tags:
+        - Key: project-name
+          Value: !Ref ProjectName
+        - Key: environment
+          Value: !Ref Environment
+        - Key: organization
+          Value: !Ref OrganizationNameAbbreviation
+        - Key: resource-scope
+          Value: !Ref ResourceScope
+        - Key: owner-dep
+          Value: !Ref OwnerDepartment
+        - Key: component-role
+          Value: eks-loadbalancer-controller-role
+        - Key: resource-department-creator
+          Value: !Ref ResourceDepartmentCreator
+        - Key: resource-creator
+          Value: !Ref ResourceCreator
+        - Key: resource-type
+          Value: iam
+        - Key: Name
+          Value: !Sub '${Environment}.${ProjectName}.eks-loadbalancer-controller.role'
+      Policies:
+        - PolicyName: !Sub '${Environment}.${ProjectName}.eks-loadbalancer-controller.policy'
+          PolicyDocument: 
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+              - iam:CreateServiceLinkedRole
+              - ec2:DescribeAccountAttributes
+              - ec2:DescribeAddresses
+              - ec2:DescribeAvailabilityZones
+              - ec2:DescribeInternetGateways
+              - ec2:DescribeVpcs
+              - ec2:DescribeSubnets
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeInstances
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeTags
+              - ec2:GetCoipPoolUsage
+              - ec2:DescribeCoipPools
+              - elasticloadbalancing:DescribeLoadBalancers
+              - elasticloadbalancing:DescribeLoadBalancerAttributes
+              - elasticloadbalancing:DescribeListeners
+              - elasticloadbalancing:DescribeListenerCertificates
+              - elasticloadbalancing:DescribeSSLPolicies
+              - elasticloadbalancing:DescribeRules
+              - elasticloadbalancing:DescribeTargetGroups
+              - elasticloadbalancing:DescribeTargetGroupAttributes
+              - elasticloadbalancing:DescribeTargetHealth
+              - elasticloadbalancing:DescribeTags
+              Resource: "*"
+            - Effect: Allow
+              Action:
+              - cognito-idp:DescribeUserPoolClient
+              - acm:ListCertificates
+              - acm:DescribeCertificate
+              - iam:ListServerCertificates
+              - iam:GetServerCertificate
+              - waf-regional:GetWebACL
+              - waf-regional:GetWebACLForResource
+              - waf-regional:AssociateWebACL
+              - waf-regional:DisassociateWebACL
+              - wafv2:GetWebACL
+              - wafv2:GetWebACLForResource
+              - wafv2:AssociateWebACL
+              - wafv2:DisassociateWebACL
+              - shield:GetSubscriptionState
+              - shield:DescribeProtection
+              - shield:CreateProtection
+              - shield:DeleteProtection
+              Resource: "*"
+            - Effect: Allow
+              Action:
+              - ec2:AuthorizeSecurityGroupIngress
+              - ec2:RevokeSecurityGroupIngress
+              Resource: "*"
+            - Effect: Allow
+              Action:
+              - ec2:CreateSecurityGroup
+              Resource: "*"
+            - Effect: Allow
+              Action:
+              - ec2:CreateTags
+              Resource: arn:aws:ec2:*:*:security-group/*
+              Condition:
+                StringEquals:
+                  ec2:CreateAction: CreateSecurityGroup
+                'Null':
+                  aws:RequestTag/elbv2.k8s.aws/cluster: 'false'
+            - Effect: Allow
+              Action:
+              - ec2:CreateTags
+              - ec2:DeleteTags
+              Resource: arn:aws:ec2:*:*:security-group/*
+              Condition:
+                'Null':
+                  aws:RequestTag/elbv2.k8s.aws/cluster: 'true'
+                  aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+            - Effect: Allow
+              Action:
+              - ec2:AuthorizeSecurityGroupIngress
+              - ec2:RevokeSecurityGroupIngress
+              - ec2:DeleteSecurityGroup
+              Resource: "*"
+              Condition:
+                'Null':
+                  aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+            - Effect: Allow
+              Action:
+              - elasticloadbalancing:CreateLoadBalancer
+              - elasticloadbalancing:CreateTargetGroup
+              Resource: "*"
+              Condition:
+                'Null':
+                  aws:RequestTag/elbv2.k8s.aws/cluster: 'false'
+            - Effect: Allow
+              Action:
+              - elasticloadbalancing:CreateListener
+              - elasticloadbalancing:DeleteListener
+              - elasticloadbalancing:CreateRule
+              - elasticloadbalancing:DeleteRule
+              Resource: "*"
+            - Effect: Allow
+              Action:
+              - elasticloadbalancing:AddTags
+              - elasticloadbalancing:RemoveTags
+              Resource:
+              - arn:aws:elasticloadbalancing:*:*:targetgroup/*/*
+              - arn:aws:elasticloadbalancing:*:*:loadbalancer/net/*/*
+              - arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*
+              Condition:
+                'Null':
+                  aws:RequestTag/elbv2.k8s.aws/cluster: 'true'
+                  aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+            - Effect: Allow
+              Action:
+              - elasticloadbalancing:AddTags
+              - elasticloadbalancing:RemoveTags
+              Resource:
+              - arn:aws:elasticloadbalancing:*:*:listener/net/*/*/*
+              - arn:aws:elasticloadbalancing:*:*:listener/app/*/*/*
+              - arn:aws:elasticloadbalancing:*:*:listener-rule/net/*/*/*
+              - arn:aws:elasticloadbalancing:*:*:listener-rule/app/*/*/*
+            - Effect: Allow
+              Action:
+              - elasticloadbalancing:ModifyLoadBalancerAttributes
+              - elasticloadbalancing:SetIpAddressType
+              - elasticloadbalancing:SetSecurityGroups
+              - elasticloadbalancing:SetSubnets
+              - elasticloadbalancing:DeleteLoadBalancer
+              - elasticloadbalancing:ModifyTargetGroup
+              - elasticloadbalancing:ModifyTargetGroupAttributes
+              - elasticloadbalancing:DeleteTargetGroup
+              Resource: "*"
+              Condition:
+                'Null':
+                  aws:ResourceTag/elbv2.k8s.aws/cluster: 'false'
+            - Effect: Allow
+              Action:
+              - elasticloadbalancing:RegisterTargets
+              - elasticloadbalancing:DeregisterTargets
+              Resource: arn:aws:elasticloadbalancing:*:*:targetgroup/*/*
+            - Effect: Allow
+              Action:
+              - elasticloadbalancing:SetWebAcl
+              - elasticloadbalancing:ModifyListener
+              - elasticloadbalancing:AddListenerCertificates
+              - elasticloadbalancing:RemoveListenerCertificates
+              - elasticloadbalancing:ModifyRule
+              Resource: "*"
+
+Outputs:
+  EksVpcCniRoleArn:
+    Value: !GetAtt EksVpcCniRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-EksVpcCniRoleArn'
+  NodeInstanceRoleArn:
+    Value: !GetAtt NodeInstanceRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-NodeInstanceRoleArn'
+  AwsLoadBalancerControllerRoleArn:
+    Value: !GetAtt AwsLoadBalancerControllerRole.Arn
+  ClusterAutoscalerRoleArn:
+    Value: !GetAtt ClusterAutoscalerRole.Arn

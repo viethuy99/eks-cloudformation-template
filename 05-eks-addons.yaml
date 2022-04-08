@@ -1,0 +1,98 @@
+Parameters:
+  OrganizationNameAbbreviation:
+    Type: String
+    Description: 'Abbreviation of the organization name, all lowercase. Eg: abc, xyz, ...'
+    AllowedPattern: '[a-z0-9\-]+'
+  ProjectName:
+    Type: String
+    Description: Project name, all lowercase.
+    AllowedPattern: '[a-z0-9\-]+'
+  Environment:
+    Type: String
+    Description: prod, stag, dev, uat, ...
+    AllowedPattern: '[a-z0-9\-]+'
+  ClusterName:
+    Type: String
+    Description: Name of the EKS cluster which will use these security groups
+    AllowedPattern: '^[0-9A-Za-z][A-Za-z0-9\-_]*'
+  EksVpcCniRoleArn:
+    Type: String
+    Description: ARN of the IAM role for EKS VPC CNI addon (IAM role for service account)
+  ResourceScope:
+    Type: String
+    AllowedValues:
+      - owned
+      - shared
+    Default: owned
+    Description: Are these resources 'owned' by the project it self or 'shared' with other projects?
+  OwnerDepartment:
+    Type: String
+    Description: Name of the department that own these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+  ResourceDepartmentCreator:
+    Type: String
+    Description: Name of the department that create these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+  ResourceCreator:
+    Type: String
+    Description: Name of the person who create these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+Resources:
+  VpcCni:
+    Type: AWS::EKS::Addon
+    DeletionPolicy: Retain
+    Properties:
+      AddonName: vpc-cni
+      ClusterName: !Ref ClusterName
+      ResolveConflicts: OVERWRITE
+      ServiceAccountRoleArn: !Ref EksVpcCniRoleArn
+      Tags:
+        - Key: project-name
+          Value: !Ref ProjectName
+        - Key: environment
+          Value: !Ref Environment
+        - Key: organization
+          Value: !Ref OrganizationNameAbbreviation
+        - Key: resource-scope
+          Value: !Ref ResourceScope
+        - Key: owner-dep
+          Value: !Ref OwnerDepartment
+        - Key: component-role
+          Value: eks-addon
+        - Key: resource-department-creator
+          Value: !Ref ResourceDepartmentCreator
+        - Key: resource-creator
+          Value: !Ref ResourceCreator
+        - Key: resource-type
+          Value: eks
+        - Key: Name
+          Value: !Sub '${Environment}.${ProjectName}.eks-vpc-cni.addon'
+
+  CoreDns:
+    Type: AWS::EKS::Addon
+    DeletionPolicy: Retain
+    Properties:
+      AddonName: coredns
+      ClusterName: !Ref ClusterName
+      ResolveConflicts: NONE
+      Tags:
+        - Key: project-name
+          Value: !Ref ProjectName
+        - Key: environment
+          Value: !Ref Environment
+        - Key: organization
+          Value: !Ref OrganizationNameAbbreviation
+        - Key: resource-scope
+          Value: !Ref ResourceScope
+        - Key: owner-dep
+          Value: !Ref OwnerDepartment
+        - Key: component-role
+          Value: eks-addon
+        - Key: resource-department-creator
+          Value: !Ref ResourceDepartmentCreator
+        - Key: resource-creator
+          Value: !Ref ResourceCreator
+        - Key: resource-type
+          Value: eks
+        - Key: Name
+          Value: !Sub '${Environment}.${ProjectName}.eks-coredns.addon'

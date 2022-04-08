@@ -1,0 +1,305 @@
+Transform: [PyPlate]
+Parameters:
+  OrganizationNameAbbreviation:
+    Type: String
+    Description: 'Abbreviation of the organization name, all lowercase. Eg: abc, xyz,
+      ...'
+    AllowedPattern: '[a-z0-9\-]+'
+  ProjectName:
+    Type: String
+    Description: Project name, all lowercase.
+    AllowedPattern: '[a-z0-9\-]+'
+  Environment:
+    Type: String
+    Description: prod, stag, dev, uat, ...
+    AllowedPattern: '[a-z0-9\-]+'
+  NodeSshKeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: SSH key name used to ssh into the nodes
+  NodeVolumeSize:
+    Type: Number
+    Default: 100
+    Description: Size of the volume associated with nodes
+  NodeSecurityGroups:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: ID of the security groups for EKS worker nodes. Can specify multiple SGs.
+  ClusterName:
+    Type: String
+    Description: EKS cluster name
+    AllowedPattern: ^[0-9A-Za-z][A-Za-z0-9\-_]*
+  ReleaseVersion:
+    Type: String
+    Default: ''
+    Description: The AMI version. See https://docs.aws.amazon.com/eks/latest/userguide/eks-linux-ami-versions.html
+  AmiType:
+    Type: String
+    AllowedValues:
+      - AL2_x86_64
+      - AL2_x86_64_GPU
+    Default: AL2_x86_64
+    Description: AMI type when not using a custom AMI. AL2_x86_64 means Amazon optimized Linux. AL2_x86_64_GPU means Amazon optmized Linux with GPU
+  NodeCapacityType:
+    Type: String
+    AllowedValues:
+      - ON_DEMAND
+      - SPOT
+    Default: ON_DEMAND
+  NodeInstanceTypes:
+    Type: CommaDelimitedList
+    Description: List of instance types, seperated by comma.
+  NodeLabels:
+    Type: CommaDelimitedList
+    Description: 'List of labels which will be assigned to nodes, the format is "key=value". Multiple labels seperated by comma. Eg: lifecycle=Ec2OnDemand,instance-type=t3.medium'
+    Default: ""
+  NodePurpose:
+    Type: String
+    Description: 'Short description of the purpose of the node, all lowercase seperated by dash. Eg: web-api'
+  NodeGroupMaxSize:
+    Type: Number
+    Default: 50
+  NodeGroupMinSize:
+    Type: Number
+    Default: 1
+  NodeGroupSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of subnet ids used by node group
+  NodeInstanceRoleArn:
+    Type: String
+    Description: ARN of the IAM role for the worker nodes.
+  KmsKeyId:
+    Type: String
+    Default: 'alias/aws/ebs'
+    Description: KMS key ID used to encrypt worker nodes EBS volumes
+  SshPort:
+    Type: Number
+    Default: 22
+    Description: SSH port used to ssh into the worker nodes.
+  ResourceScope:
+    Type: String
+    AllowedValues:
+    - owned
+    - shared
+    Default: owned
+    Description: Are these resources 'owned' by the project it self or 'shared' with
+      other projects?
+  OwnerDepartment:
+    Type: String
+    Description: Name of the department that own these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+  ResourceDepartmentCreator:
+    Type: String
+    Description: Name of the department that create these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+  ResourceCreator:
+    Type: String
+    Description: Name of the person who create these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+
+Conditions:
+  OnDemandNode: !Equals [!Ref NodeCapacityType, ON_DEMAND]
+  # SingleSecurityGroup: !Equals [!Ref NodeAdditionalSecurityGroupId, ""]
+  EncryptEbs: !Not [!Equals [!Ref KmsKeyId, '']]
+  SpecifiedReleaseVersion: !Not [!Equals [!Ref ReleaseVersion, '']]
+
+Resources:
+  NodeLaunchTemplate:
+    Type: "AWS::EC2::LaunchTemplate"
+    DeletionPolicy: Retain
+    Properties:
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - Key: project-name
+              Value: !Ref ProjectName
+            - Key: environment
+              Value: !Ref Environment
+            - Key: organization
+              Value: !Ref OrganizationNameAbbreviation
+            - Key: resource-scope
+              Value: !Ref ResourceScope
+            - Key: owner-dep
+              Value: !Ref OwnerDepartment
+            - Key: component-role
+              Value: !Sub 'eks-worker-nodes-launch-template-${NodePurpose}'
+            - Key: resource-department-creator
+              Value: !Ref ResourceDepartmentCreator
+            - Key: resource-creator
+              Value: !Ref ResourceCreator
+            - Key: resource-type
+              Value: ec2
+            - Key: Name
+              Value: !Sub '${Environment}.eks-${ProjectName}.eks-cluster.role'
+      LaunchTemplateName: !Sub
+        - ${Environment}.${ProjectName}.eks-${NodePurpose}-${InstanceType}-${Lifecycle}.lt
+        - Lifecycle: !If
+            - OnDemandNode
+            - ondemand
+            - spot
+          InstanceType: 
+            'Fn::Transform':
+            - Name: 'String'
+              Parameters:
+                InputString: !Select [0, !Ref NodeInstanceTypes]
+                Operation: Replace
+                Old: '.'
+                New: ''
+      LaunchTemplateData:
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              DeleteOnTermination: true
+              VolumeSize: !Ref NodeVolumeSize
+              VolumeType: gp3
+              Encrypted: !If
+                - EncryptEbs
+                - true
+                - false
+              KmsKeyId: !If
+                - EncryptEbs
+                - !Ref KmsKeyId
+                - !Ref "AWS::NoValue"
+        KeyName: !Ref NodeSshKeyName
+        SecurityGroupIds: !Ref NodeSecurityGroups
+          # - !Ref NodeMainSecurityGroupId
+          # - !If
+          #   - SingleSecurityGroup
+          #   - !Ref "AWS::NoValue"
+          #   - !Ref NodeAdditionalSecurityGroupId
+        UserData: !Base64
+          "Fn::Sub": |
+            MIME-Version: 1.0
+            Content-Type: multipart/mixed; boundary="==MYBOUNDARY=="
+            
+            --==MYBOUNDARY==
+            Content-Type: text/x-shellscript; charset="us-ascii"
+            
+            #!/bin/bash
+            sudo yum install -y ipvsadm
+            sudo ipvsadm -l
+            sudo modprobe ip_vs 
+            sudo modprobe ip_vs_rr
+            sudo modprobe ip_vs_wrr 
+            sudo modprobe ip_vs_sh
+            sudo modprobe ip_vs_lc
+            sudo modprobe ip_vs_dh
+            sudo modprobe ip_vs_sed
+            sudo modprobe ip_vs_nq
+            sudo modprobe nf_conntrack
+
+            echo "Port ${SshPort}" >> /etc/ssh/sshd_config
+            systemctl restart sshd
+            
+            --==MYBOUNDARY==--
+        MetadataOptions:
+          HttpPutResponseHopLimit : 1
+          HttpEndpoint: enabled
+          HttpTokens: required
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: project-name
+                Value: !Ref ProjectName
+              - Key: environment
+                Value: !Ref Environment
+              - Key: organization
+                Value: !Ref OrganizationNameAbbreviation
+              - Key: resource-scope
+                Value: !Ref ResourceScope
+              - Key: owner-dep
+                Value: !Ref OwnerDepartment
+              - Key: component-role
+                Value: !Sub 'eks-worker-node-${NodePurpose}'
+              - Key: resource-department-creator
+                Value: !Ref ResourceDepartmentCreator
+              - Key: resource-creator
+                Value: !Ref ResourceCreator
+              - Key: resource-type
+                Value: ec2
+              - Key: Name
+                Value: !Sub
+                  - ${Environment}.${ProjectName}.eks-${NodePurpose}-${InstanceType}-${Lifecycle}.ec2
+                  - Lifecycle: !If
+                      - OnDemandNode
+                      - ondemand
+                      - spot
+                    InstanceType: 
+                      'Fn::Transform':
+                      - Name: 'String'
+                        Parameters:
+                          InputString: !Select [0, !Ref NodeInstanceTypes]
+                          Operation: Replace
+                          Old: '.'
+                          New: ''
+
+  EksManagedNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    DeletionPolicy: Retain
+    Properties:
+      AmiType: !Ref AmiType
+      CapacityType: !Ref NodeCapacityType
+      ClusterName: !Ref ClusterName
+      ReleaseVersion: !If
+        - SpecifiedReleaseVersion
+        - !Ref ReleaseVersion
+        - !Ref "AWS::NoValue"
+      ForceUpdateEnabled: true
+      InstanceTypes: !Ref NodeInstanceTypes
+      Labels: |
+        #!PyPlate
+        output = {}
+        num_labels = 0
+        for label in params['NodeLabels']:
+          if len(label) > 0:
+            key, value = label.split('=')
+            output[key] = value
+            num_labels += 1
+        if num_labels == 0:
+          output['workload-type'] = params['NodePurpose']
+      LaunchTemplate:
+        Id: !Ref NodeLaunchTemplate
+        Version: !GetAtt NodeLaunchTemplate.LatestVersionNumber
+      # NodegroupName: "Some-nodegroup"
+      NodegroupName: !Sub
+        - ${Environment}-${ProjectName}-eks-${NodePurpose}-${InstanceType}-${Lifecycle}-ng
+        - Lifecycle: !If
+            - OnDemandNode
+            - ondemand
+            - spot
+          InstanceType: 
+            'Fn::Transform':
+            - Name: 'String'
+              Parameters:
+                InputString: !Select [0, !Ref NodeInstanceTypes]
+                Operation: Replace
+                Old: '.'
+                New: ''
+      NodeRole: !Ref NodeInstanceRoleArn
+      ScalingConfig:
+        MaxSize: !Ref NodeGroupMaxSize
+        MinSize: !Ref NodeGroupMinSize
+        DesiredSize: !Ref NodeGroupMinSize
+      Subnets: !Ref NodeGroupSubnetIds
+      Tags:
+        project-name: !Ref ProjectName
+        environment: !Ref Environment
+        organization: !Ref OrganizationNameAbbreviation
+        resource-scope: !Ref ResourceScope
+        owner-dep: !Ref OwnerDepartment
+        component-role: !Sub 'eks-nodegroup-${NodePurpose}'
+        resource-department-creator: !Ref ResourceDepartmentCreator
+        resource-creator: !Ref ResourceCreator
+        resource-type: eks
+        Name: !Sub
+          - ${Environment}.${ProjectName}.eks-${NodePurpose}-${InstanceType}-${Lifecycle}.ng
+          - Lifecycle: !If
+              - OnDemandNode
+              - ondemand
+              - spot
+            InstanceType: 
+              'Fn::Transform':
+              - Name: 'String'
+                Parameters:
+                  InputString: !Select [0, !Ref NodeInstanceTypes]
+                  Operation: Replace
+                  Old: '.'
+                  New: ''

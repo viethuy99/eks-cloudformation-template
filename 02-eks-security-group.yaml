@@ -1,0 +1,185 @@
+Parameters:
+  OrganizationNameAbbreviation:
+    Type: String
+    Description: 'Abbreviation of the organization name, all lowercase. Eg: abc, xyz, ...'
+    AllowedPattern: '[a-z0-9\-]+'
+  ProjectName:
+    Type: String
+    Description: Project name, all lowercase.
+    AllowedPattern: '[a-z0-9\-]+'
+  Environment:
+    Type: String
+    Description: prod, stag, dev, uat, ...
+    AllowedPattern: '[a-z0-9\-]+'
+  ClusterVpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Id of the VPC in which the EKS cluster will be placed
+  ClusterName:
+    Type: String
+    Description: Name of the EKS cluster which will use these security groups
+    AllowedPattern: '^[0-9A-Za-z][A-Za-z0-9\-_]*'
+  ResourceScope:
+    Type: String
+    AllowedValues:
+      - owned
+      - shared
+    Default: owned
+    Description: Are these resources 'owned' by the project it self or 'shared' with other projects?
+  OwnerDepartment:
+    Type: String
+    Description: Name of the department that own these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+  ResourceDepartmentCreator:
+    Type: String
+    Description: Name of the department that create these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+  ResourceCreator:
+    Type: String
+    Description: Name of the person who create these resources, all lowercase
+    AllowedPattern: '[a-z0-9\-]+'
+
+Resources:
+  ###############################################################################
+  # EKS worker node security group
+  ###############################################################################
+  EksWorkerNodeSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DeletionPolicy: Retain
+    Properties:
+      GroupDescription: !Sub 'Used by EKS worker nodes for ${ProjectName} project and ${Environment} env'
+      GroupName: !Sub '${Environment}.${ProjectName}.eks-worker-nodes.sg'
+      VpcId: !Ref ClusterVpcId
+      Tags:
+        - Key: !Sub 'kubernetes.io/cluster/${ClusterName}'
+          Value: owned
+        - Key: project-name
+          Value: !Ref ProjectName
+        - Key: environment
+          Value: !Ref Environment
+        - Key: organization
+          Value: !Ref OrganizationNameAbbreviation
+        - Key: resource-scope
+          Value: !Ref ResourceScope
+        - Key: owner-dep
+          Value: !Ref OwnerDepartment
+        - Key: component-role
+          Value: eks-worker-nodes-security-group
+        - Key: resource-department-creator
+          Value: !Ref ResourceDepartmentCreator
+        - Key: resource-creator
+          Value: !Ref ResourceCreator
+        - Key: resource-type
+          Value: vpc
+        - Key: Name
+          Value: !Sub '${Environment}.${ProjectName}.eks-worker-nodes.sg'
+  ##############################################################################
+  # EKS Cluster security group
+  ##############################################################################
+  EksClusterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DeletionPolicy: Retain
+    Properties:
+      GroupDescription: !Sub 'Used by EKS cluster for ${ProjectName} project and ${Environment} env'
+      GroupName: !Sub '${Environment}.${ProjectName}.eks-cluster.sg'
+      VpcId: !Ref ClusterVpcId
+      Tags:
+        - Key: project-name
+          Value: !Ref ProjectName
+        - Key: environment
+          Value: !Ref Environment
+        - Key: organization
+          Value: !Ref OrganizationNameAbbreviation
+        - Key: resource-scope
+          Value: !Ref ResourceScope
+        - Key: owner-dep
+          Value: !Ref OwnerDepartment
+        - Key: component-role
+          Value: eks-cluster-security-group
+        - Key: resource-department-creator
+          Value: !Ref ResourceDepartmentCreator
+        - Key: resource-creator
+          Value: !Ref ResourceCreator
+        - Key: resource-type
+          Value: vpc
+        - Key: Name
+          Value: !Sub '${Environment}.${ProjectName}.eks-cluster.sg'
+  ##############################################################################
+  # EKS Worker node security group ingress rules
+  ##############################################################################
+  EksWorkerNodeSecurityGroupIngress1:
+    Type: AWS::EC2::SecurityGroupIngress
+    DeletionPolicy: Retain
+    Properties:
+      Description: Allow communication between worker nodes
+      SourceSecurityGroupId: !GetAtt EksWorkerNodeSecurityGroup.GroupId
+      IpProtocol: -1
+      GroupId: !GetAtt EksWorkerNodeSecurityGroup.GroupId
+  EksWorkerNodeSecurityGroupIngress2:
+    Type: AWS::EC2::SecurityGroupIngress
+    DeletionPolicy: Retain
+    Properties:
+      Description: Allow communication from EKS control plane
+      SourceSecurityGroupId: !GetAtt EksClusterSecurityGroup.GroupId
+      FromPort: 1025
+      ToPort: 65535
+      IpProtocol: tcp
+      GroupId: !GetAtt EksWorkerNodeSecurityGroup.GroupId
+  EksWorkerNodeSecurityGroupIngress3:
+    Type: AWS::EC2::SecurityGroupIngress
+    DeletionPolicy: Retain
+    Properties:
+      Description: Allow communication from EKS control plane
+      SourceSecurityGroupId: !GetAtt EksClusterSecurityGroup.GroupId
+      FromPort: 443
+      ToPort: 443
+      IpProtocol: tcp
+      GroupId: !GetAtt EksWorkerNodeSecurityGroup.GroupId
+  ##############################################################################
+  # EKS worker node security group egress rules
+  ##############################################################################
+  EksWorkerNodeSecurityGroupEgress1:
+    Type: AWS::EC2::SecurityGroupEgress
+    DeletionPolicy: Retain
+    Properties:
+      Description: Allow communication to the Internet
+      CidrIp: 0.0.0.0/0
+      IpProtocol: -1
+      GroupId: !GetAtt EksWorkerNodeSecurityGroup.GroupId
+  ##############################################################################
+  # EKS control plane security group ingress rules
+  ##############################################################################
+  EksClusterSecurityGroupIngress1:
+    Type: AWS::EC2::SecurityGroupIngress
+    DeletionPolicy: Retain
+    Properties:
+      Description: Allow communication to control plane API from worker nodes
+      SourceSecurityGroupId: !GetAtt EksWorkerNodeSecurityGroup.GroupId
+      FromPort: 443
+      ToPort: 443
+      IpProtocol: tcp
+      GroupId: !GetAtt EksClusterSecurityGroup.GroupId
+  ##############################################################################
+  # EKS control plane security group egress rules
+  ##############################################################################
+  EksClusterSecurityGroupEgress1:
+    Type: AWS::EC2::SecurityGroupEgress
+    DeletionPolicy: Retain
+    Properties:
+      Description: Allow communication to all worker nodes
+      DestinationSecurityGroupId: !GetAtt EksWorkerNodeSecurityGroup.GroupId
+      FromPort: 1025
+      ToPort: 65535
+      IpProtocol: tcp
+      GroupId: !GetAtt EksClusterSecurityGroup.GroupId
+
+Outputs:
+  EksClusterSecurityGroupId:
+    Description: EKS Cluster control plane security group id
+    Value: !GetAtt EksClusterSecurityGroup.GroupId
+    Export:
+      Name: !Sub '${AWS::StackName}-EksClusterSecurityGroupId'
+  EksWorkerNodeSecurityGroupId:
+    Description: EKS worker nodes security group id
+    Value: !GetAtt EksWorkerNodeSecurityGroup.GroupId
+    Export:
+      Name: !Sub '${AWS::StackName}-EksWorkerNodeSecurityGroupId'
